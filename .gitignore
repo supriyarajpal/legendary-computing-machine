@@ -3,3 +3,35 @@
 __pycache__/
 **/__pycache__/
 *.pyc
+
+/dist
+/tmp
+/out-tsc
+/app-builds
+/release
+main.js
+src/**/*.js
+*.js.map
+
+# dependencies
+node_modules/
+npm-debug.log*
+yarn-error.log
+
+# IDEs and editors
+.idea/
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# OS-specific files
+.DS_Store
+Thumbs.db

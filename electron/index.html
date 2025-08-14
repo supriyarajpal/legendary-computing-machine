@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>On-Device MAS — Day 1</title>
+    <style>
+      body { font-family: Arial, Helvetica, sans-serif; margin: 12px; }
+      #chart-container { width: 100%; max-width: 800px; }
+      #json { white-space: pre-wrap; background: #f5f5f5; padding: 8px; border-radius: 6px; max-height: 200px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <h2>On-Device MAS — Day 1 (MouseAgent)</h2>
+    <div id="status">Connecting to Python agent...</div>
+    <div id="chart-container">
+      <canvas id="speedChart"></canvas>
+    </div>
+    <h3>Latest features (JSON)</h3>
+    <div id="json">—</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
