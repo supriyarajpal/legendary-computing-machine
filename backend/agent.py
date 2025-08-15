@@ -1,63 +1,58 @@
-"""
-MouseAgent WebSocket server
-- Captures mouse move events via pynput
-- Keeps a sliding window (e.g., 5s) of recent events
-- Every 2 seconds computes features and streams them to connected WebSocket clients
-
-Features computed:
-- mean_speed (pixels/sec)
-- std_speed
-- jitter (std of short-delta magnitudes)
-- direction_changes (count of large angle changes)
-- sample_count
-
-Run: python agent.py
-"""
-
 import asyncio
 import json
 import math
 import time
 from collections import deque
 from threading import Thread
+import win32api  # pywin32
 
 import websockets
-from pynput import mouse
+from river import anomaly
 
-# sliding window length (seconds)
-WINDOW_S = 5.0
-SEND_INTERVAL = 2.0
+WINDOW_S = 2.5
+SEND_INTERVAL = 1.0
+POLL_INTERVAL = 0.01  # seconds between position checks
 
-# store (ts, x, y)
 events = deque()
 
-# thread-safe append from listener
+hst = anomaly.HalfSpaceTrees(
+    seed=42,
+    n_trees=25,
+    height=8,
+    window_size=50
+)
 
-def on_move(x, y):
-    ts = time.time()
-    events.append((ts, x, y))
-    # trim older than WINDOW_S
-    cutoff = ts - WINDOW_S
-    while events and events[0][0] < cutoff:
-        events.popleft()
+WARMUP_SAMPLES = 20
+samples_seen = 0
+
+
+def mouse_polling_loop():
+    """Continuously poll the mouse position."""
+    while True:
+        x, y = win32api.GetCursorPos()
+        ts = time.time()
+        events.append((ts, x, y))
+
+        cutoff = ts - WINDOW_S
+        while events and events[0][0] < cutoff:
+            events.popleft()
+
+        time.sleep(POLL_INTERVAL)
 
 
 def start_mouse_listener():
-    listener = mouse.Listener(on_move=on_move)
-    listener.start()
-    return listener
+    """Start the mouse polling thread."""
+    t = Thread(target=mouse_polling_loop, daemon=True)
+    t.start()
 
 
 def compute_features():
-    # copy events to local list
     ev = list(events)
     n = len(ev)
     if n < 2:
         return None
 
-    speeds = []
-    deltas = []
-    angles = []
+    speeds, deltas, angles = [], [], []
 
     for i in range(1, n):
         t0, x0, y0 = ev[i - 1]
@@ -66,26 +61,17 @@ def compute_features():
         dx = x1 - x0
         dy = y1 - y0
         dist = math.hypot(dx, dy)
-        speed = dist / dt
-        speeds.append(speed)
+        speeds.append(dist / dt)
         deltas.append(dist)
-        angle = math.atan2(dy, dx)
-        angles.append(angle)
+        angles.append(math.atan2(dy, dx))
 
-    # mean and std speed
     mean_speed = sum(speeds) / len(speeds)
-    var_speed = sum((s - mean_speed) ** 2 for s in speeds) / len(speeds)
-    std_speed = math.sqrt(var_speed)
-
-    # jitter: std of small deltas
+    std_speed = math.sqrt(sum((s - mean_speed) ** 2 for s in speeds) / len(speeds))
     mean_delta = sum(deltas) / len(deltas)
-    var_delta = sum((d - mean_delta) ** 2 for d in deltas) / len(deltas)
-    jitter = math.sqrt(var_delta)
+    jitter = math.sqrt(sum((d - mean_delta) ** 2 for d in deltas) / len(deltas))
 
-    # count large direction changes
     dir_changes = 0
     for i in range(1, len(angles)):
-        # difference in angle normalized to [-pi,pi]
         diff = angles[i] - angles[i - 1]
         while diff > math.pi:
             diff -= 2 * math.pi
@@ -94,18 +80,18 @@ def compute_features():
         if abs(diff) > math.radians(30):
             dir_changes += 1
 
-    features = {
-        'timestamp': time.time(),
+    return {
+        'timestamp': int(time.time() * 1000),
         'sample_count': n,
         'mean_speed': mean_speed,
         'std_speed': std_speed,
         'jitter': jitter,
         'direction_changes': dir_changes,
     }
-    return features
 
 
 async def ws_handler(websocket):
+    global samples_seen
     print(f'Client connected: {websocket.remote_address}')
 
     await websocket.send(json.dumps({
@@ -113,12 +99,30 @@ async def ws_handler(websocket):
         'status': 'connected',
         'message': 'Hello from Python agent — waiting for mouse activity'
     }))
-    
+
     try:
         while True:
             features = compute_features()
-            if features is not None:
-                features['timestamp'] = int(features['timestamp'] * 1000)
+            if features:
+                river_features = {
+                    'mean_speed': features['mean_speed'] / 1000,
+                    'std_speed': features['std_speed'] / 1000,
+                    'jitter': features['jitter'] / 1000,
+                    'direction_changes': features['direction_changes'] / 10,
+                    'sample_count': features['sample_count'] / 100
+                }
+
+                if samples_seen < WARMUP_SAMPLES:
+                    hst.learn_one(river_features)
+                    features['anomaly_score'] = None
+                    samples_seen += 1
+                    print(f"Warming up model... ({samples_seen}/{WARMUP_SAMPLES})")
+                else:
+                    score = hst.score_one(river_features)
+                    features['anomaly_score'] = score
+                    hst.learn_one(river_features)
+                    print(f"Anomaly score: {score:.4f}")
+
                 await websocket.send(json.dumps(features))
             await asyncio.sleep(SEND_INTERVAL)
     except websockets.exceptions.ConnectionClosed:
@@ -132,9 +136,7 @@ async def start_server():
 
 
 if __name__ == '__main__':
-    # Start mouse listener in non-blocking thread
     start_mouse_listener()
-    # Start asyncio event loop for websocket server
     try:
         asyncio.run(start_server())
     except KeyboardInterrupt:
